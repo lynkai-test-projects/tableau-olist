@@ -1,17 +1,15 @@
 """Build a Tableau .hyper extract from the Olist dbt marts + curated views in Snowflake.
 
-Produces ONE order-level fact table (one row per order) that powers the whole
-"Olist Marketplace Overview" executive dashboard — KPI tiles, monthly GMV/order
-trend, GMV by category, on-time rate by shipping-distance band, GMV by customer
-state, and orders by Brazilian season. Every panel is an aggregation over this
-single embedded table, so the workbook needs just one datasource.
+Writes TWO tables into one .hyper:
+  - Extract.Extract : one row per order (order-level fact) — powers the KPI tiles,
+    monthly GMV trend, GMV-by-state map, category treemap, and late-rate-by-distance.
+  - Extract.Seller  : one row per seller (from the seller-performance mart) — powers
+    the seller scatter (delivery time vs review, colored by late rate, sized by GMV).
 
-Grain: one row per order (all statuses). GMV is the sum of item price+freight;
-primary_category / is_late / review_score / distance come from joins.
-
-Connection uses key-pair auth (same key the Snowflake MCP uses); we only read
-the key to authenticate. The corporate network MITM-intercepts TLS, so point
-OpenSSL at the combined CA bundle before importing snowflake.connector.
+Extract approach: the data is embedded in the workbook, so no live Snowflake
+connection is needed at view time. Connection uses key-pair auth (same key the
+Snowflake MCP uses). The corporate network MITM-intercepts TLS, so point OpenSSL
+at the combined CA bundle before importing snowflake.connector.
 
 Usage:  python publish/build_extract.py [output.hyper]
 """
@@ -41,10 +39,9 @@ from tableauhyperapi import (
     Telemetry,
 )
 
-# One row per order. GMV + primary category from order_items x products;
-# is_late/status from the curated orders view; review score from reviews;
-# distance from the dbt order-distance mart; season from the dbt calendar.
-QUERY = """
+# One row per order. is_complete_month flags whether the order's month is fully
+# elapsed (so the monthly-trend line can exclude the partial current month).
+ORDERS_QUERY = """
 WITH item_agg AS (
     SELECT oi.ORDER_ID,
            SUM(oi.TOTAL_VALUE_BRL)                          AS gmv_brl,
@@ -63,6 +60,8 @@ SELECT
     o.CUSTOMER_ID,
     DATE_TRUNC('MONTH', o.ORDER_PURCHASE_TIMESTAMP)::DATE   AS order_month,
     YEAR(o.ORDER_PURCHASE_TIMESTAMP)                        AS order_year,
+    IFF(DATE_TRUNC('MONTH', o.ORDER_PURCHASE_TIMESTAMP)
+          < DATE_TRUNC('MONTH', CURRENT_DATE()), 1, 0)      AS is_complete_month,
     ia.gmv_brl,
     COALESCE(ia.primary_category, 'Unknown')               AS primary_category,
     c.CUSTOMER_STATE,
@@ -84,11 +83,20 @@ LEFT JOIN OLIST.DBT_DEMO.MART_ORDER_DISTANCE od ON od.ORDER_ID = o.ORDER_ID
 LEFT JOIN OLIST.DBT_DEMO.DIM_CALENDAR cal ON cal.DATE_DAY = o.ORDER_PURCHASE_TIMESTAMP::DATE
 """
 
-EXTRACT_TABLE = TableName("Extract", "Extract")
+SELLER_QUERY = """
+SELECT SELLER_ID, SELLER_STATE, PRIMARY_CATEGORY,
+       GMV_BRL, ORDER_COUNT, DELIVERED_ORDERS,
+       AVG_DELIVERY_DAYS, AVG_REVIEW_SCORE, LATE_DELIVERY_RATE, REVIEW_COUNT
+FROM OLIST.DBT_DEMO.MART_SELLER_PERFORMANCE
+WHERE ORDER_COUNT >= 10   -- meaningful sellers only, for a clean scatter
+"""
+
+ORDERS_TABLE = TableName("Extract", "Extract")
+SELLER_TABLE = TableName("Extract", "Seller")
 
 
-def fetch_rows():
-    conn = snowflake.connector.connect(
+def _connect():
+    return snowflake.connector.connect(
         account=os.environ.get("SNOWFLAKE_ACCOUNT", "a5628485664271-lynkai_partner"),
         user=os.environ.get("SNOWFLAKE_USER", "LAILA"),
         authenticator="snowflake_jwt",
@@ -100,21 +108,25 @@ def fetch_rows():
         database="OLIST",
         schema="PUBLIC",
     )
+
+
+def fetch():
+    conn = _connect()
     try:
         cur = conn.cursor()
-        cur.execute(QUERY)
-        rows = cur.fetchall()
+        cur.execute(ORDERS_QUERY)
+        orders = cur.fetchall()
+        cur.execute(SELLER_QUERY)
+        sellers = cur.fetchall()
     finally:
         conn.close()
-    norm = []
-    for (oid, cid, omonth, oyear, gmv, cat, cstate, status, late, ddays, rscore, dist, dbucket, dorder, season) in rows:
-        norm.append([
-            str(oid),
-            str(cid),
-            omonth,  # datetime.date
-            int(oyear),
-            None if gmv is None else float(gmv),
-            str(cat),
+
+    o_norm = []
+    for (oid, cid, omonth, oyear, complete, gmv, cat, cstate, status, late, ddays,
+         rscore, dist, dbucket, dorder, season) in orders:
+        o_norm.append([
+            str(oid), str(cid), omonth, int(oyear), int(complete),
+            None if gmv is None else float(gmv), str(cat),
             None if cstate is None else str(cstate),
             None if status is None else str(status),
             None if late is None else int(late),
@@ -125,10 +137,25 @@ def fetch_rows():
             None if dorder is None else int(dorder),
             None if season is None else str(season),
         ])
-    return norm
+
+    s_norm = []
+    for (sid, sstate, cat, gmv, ocount, dorders, adays, arev, lrate, rcount) in sellers:
+        s_norm.append([
+            str(sid),
+            None if sstate is None else str(sstate),
+            None if cat is None else str(cat),
+            None if gmv is None else float(gmv),
+            None if ocount is None else int(ocount),
+            None if dorders is None else int(dorders),
+            None if adays is None else float(adays),
+            None if arev is None else float(arev),
+            None if lrate is None else float(lrate),
+            None if rcount is None else int(rcount),
+        ])
+    return o_norm, s_norm
 
 
-def write_hyper(rows, hyper_path: Path) -> None:
+def write_hyper(orders, sellers, hyper_path: Path) -> None:
     hyper_path.parent.mkdir(parents=True, exist_ok=True)
     if hyper_path.exists():
         hyper_path.unlink()
@@ -136,50 +163,59 @@ def write_hyper(rows, hyper_path: Path) -> None:
     def col(name, sqltype, nullable=Nullability.NULLABLE):
         return TableDefinition.Column(name, sqltype, nullable)
 
-    table_def = TableDefinition(
-        EXTRACT_TABLE,
-        [
-            col("ORDER_ID", SqlType.text(), Nullability.NOT_NULLABLE),
-            col("CUSTOMER_ID", SqlType.text(), Nullability.NOT_NULLABLE),
-            col("ORDER_MONTH", SqlType.date(), Nullability.NOT_NULLABLE),
-            col("ORDER_YEAR", SqlType.int(), Nullability.NOT_NULLABLE),
-            col("GMV_BRL", SqlType.double()),
-            col("PRIMARY_CATEGORY", SqlType.text(), Nullability.NOT_NULLABLE),
-            col("CUSTOMER_STATE", SqlType.text()),
-            col("ORDER_STATUS", SqlType.text()),
-            col("IS_LATE", SqlType.int()),
-            col("DELIVERY_DAYS", SqlType.double()),
-            col("REVIEW_SCORE", SqlType.double()),
-            col("DISTANCE_KM", SqlType.double()),
-            col("DISTANCE_BUCKET", SqlType.text()),
-            col("DISTANCE_ORDER", SqlType.int()),
-            col("BRAZILIAN_SEASON", SqlType.text()),
-        ],
-    )
+    orders_def = TableDefinition(ORDERS_TABLE, [
+        col("ORDER_ID", SqlType.text(), Nullability.NOT_NULLABLE),
+        col("CUSTOMER_ID", SqlType.text(), Nullability.NOT_NULLABLE),
+        col("ORDER_MONTH", SqlType.date(), Nullability.NOT_NULLABLE),
+        col("ORDER_YEAR", SqlType.int(), Nullability.NOT_NULLABLE),
+        col("IS_COMPLETE_MONTH", SqlType.int(), Nullability.NOT_NULLABLE),
+        col("GMV_BRL", SqlType.double()),
+        col("PRIMARY_CATEGORY", SqlType.text(), Nullability.NOT_NULLABLE),
+        col("CUSTOMER_STATE", SqlType.text()),
+        col("ORDER_STATUS", SqlType.text()),
+        col("IS_LATE", SqlType.int()),
+        col("DELIVERY_DAYS", SqlType.double()),
+        col("REVIEW_SCORE", SqlType.double()),
+        col("DISTANCE_KM", SqlType.double()),
+        col("DISTANCE_BUCKET", SqlType.text()),
+        col("DISTANCE_ORDER", SqlType.int()),
+        col("BRAZILIAN_SEASON", SqlType.text()),
+    ])
+    seller_def = TableDefinition(SELLER_TABLE, [
+        col("SELLER_ID", SqlType.text(), Nullability.NOT_NULLABLE),
+        col("SELLER_STATE", SqlType.text()),
+        col("PRIMARY_CATEGORY", SqlType.text()),
+        col("GMV_BRL", SqlType.double()),
+        col("ORDER_COUNT", SqlType.big_int()),
+        col("DELIVERED_ORDERS", SqlType.big_int()),
+        col("AVG_DELIVERY_DAYS", SqlType.double()),
+        col("AVG_REVIEW_SCORE", SqlType.double()),
+        col("LATE_DELIVERY_RATE", SqlType.double()),
+        col("REVIEW_COUNT", SqlType.big_int()),
+    ])
 
     with HyperProcess(Telemetry.DO_NOT_SEND_USAGE_DATA_TO_TABLEAU) as hyper:
-        with Connection(
-            hyper.endpoint, str(hyper_path), CreateMode.CREATE_AND_REPLACE
-        ) as conn:
+        with Connection(hyper.endpoint, str(hyper_path), CreateMode.CREATE_AND_REPLACE) as conn:
             conn.catalog.create_schema("Extract")
-            conn.catalog.create_table(table_def)
-            with Inserter(conn, table_def) as inserter:
-                inserter.add_rows(rows)
-                inserter.execute()
-            count = conn.execute_scalar_query(f"SELECT COUNT(*) FROM {EXTRACT_TABLE}")
-    print(f"Wrote {count} rows -> {hyper_path}")
+            conn.catalog.create_table(orders_def)
+            conn.catalog.create_table(seller_def)
+            with Inserter(conn, orders_def) as ins:
+                ins.add_rows(orders)
+                ins.execute()
+            with Inserter(conn, seller_def) as ins:
+                ins.add_rows(sellers)
+                ins.execute()
+            no = conn.execute_scalar_query(f"SELECT COUNT(*) FROM {ORDERS_TABLE}")
+            ns = conn.execute_scalar_query(f"SELECT COUNT(*) FROM {SELLER_TABLE}")
+    print(f"Wrote {no} orders + {ns} sellers -> {hyper_path}")
 
 
 def main() -> None:
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("build/olist_orders.hyper")
-    rows = fetch_rows()
-    print(f"Fetched {len(rows)} rows from Snowflake.")
-    if rows:
-        gmv = sum(r[4] for r in rows if r[4] is not None)
-        cats = sorted({r[5] for r in rows})
-        print(f"Total GMV (BRL): {gmv:,.0f} | distinct categories: {len(cats)}")
-        print("Sample:", rows[0])
-    write_hyper(rows, out)
+    orders, sellers = fetch()
+    gmv = sum(r[5] for r in orders if r[5] is not None)
+    print(f"Fetched {len(orders)} orders (GMV R$ {gmv:,.0f}) + {len(sellers)} sellers.")
+    write_hyper(orders, sellers, out)
 
 
 if __name__ == "__main__":
