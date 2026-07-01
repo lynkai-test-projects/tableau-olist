@@ -1,0 +1,7 @@
+# Copy to config.toml and edit. The PAT is read from env vars, never stored here.
+server_url = "https://prod-uk-a.online.tableau.com"
+site_content_url = "laila-5f52a99af6"
+project_name = "default"
+workbook_name = "Olist Marketplace Overview"
+workbook_file = "../workbooks/olist_overview.twbx"
+api_version = "3.19"

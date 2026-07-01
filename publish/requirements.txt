@@ -1,0 +1,7 @@
+# Extract build. Publishing uses only the Python stdlib (urllib) — no
+# tableauserverclient required.
+tableauhyperapi>=0.0.19000
+snowflake-connector-python>=3.13
+cryptography
+# Python <3.11 only (3.11+ has tomllib in the stdlib):
+# tomli

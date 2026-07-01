@@ -1,0 +1,16 @@
+# Local publish config may hold environment-specific paths; PAT is always in env.
+publish/config.toml
+
+# Build intermediates + exported previews
+build/
+*.hyper
+hyperd.log
+
+# Secrets (never commit)
+secrets/
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
