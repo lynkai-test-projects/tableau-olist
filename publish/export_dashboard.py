@@ -72,8 +72,17 @@ def main() -> None:
 
     png = call(api(f"sites/{site_id}/views/{view_id}/image?resolution=high&maxAge=1"), headers=auth)
     (out / "olist_overview.png").write_bytes(png)
-    pdf = call(api(f"sites/{site_id}/views/{view_id}/pdf?type=letter&orientation=portrait&maxAge=1"), headers=auth)
-    (out / "olist_overview.pdf").write_bytes(pdf)
+
+    # The PDF is only a "Download" convenience link. Some servers reject the PDF
+    # endpoint for large dashboards (HTTP 400) — never let that fail the deploy.
+    pdf_link = ""
+    try:
+        pdf = call(api(f"sites/{site_id}/views/{view_id}/pdf?maxAge=1"), headers=auth)
+        (out / "olist_overview.pdf").write_bytes(pdf)
+        pdf_link = '<div class="bar"><a class="btn" href="olist_overview.pdf">Download PDF</a></div>'
+        print(f"PDF exported ({len(pdf):,} B)")
+    except Exception as e:
+        print(f"WARN: PDF export skipped ({e}); deploying PNG only.")
 
     updated = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     (out / "index.html").write_text(f"""<!doctype html>
@@ -94,14 +103,14 @@ def main() -> None:
 <body>
   <header><h1>Olist Marketplace Overview</h1><p>Executive dashboard · built on the dbt marts (OLIST.DBT_DEMO)</p></header>
   <main>
-    <div class="bar"><a class="btn" href="olist_overview.pdf">Download PDF</a></div>
+    {pdf_link}
     <img src="olist_overview.png" alt="Olist Marketplace Overview dashboard">
     <footer>Snapshot of the live Tableau dashboard · last updated {updated} · auto-published from the tableau-olist repo</footer>
   </main>
 </body></html>
 """, encoding="utf-8")
 
-    print(f"Wrote {out}/index.html, olist_overview.png ({len(png):,} B), olist_overview.pdf ({len(pdf):,} B)")
+    print(f"Wrote {out}/index.html + olist_overview.png ({len(png):,} B)")
 
 
 if __name__ == "__main__":
