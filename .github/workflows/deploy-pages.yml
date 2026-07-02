@@ -1,0 +1,60 @@
+name: Deploy dashboard to GitHub Pages
+
+# Publishes a static snapshot of the "Olist Marketplace Overview" dashboard to
+# GitHub Pages. It exports whatever is currently LIVE on Tableau Cloud, so:
+#   - push (code change)   -> redeploy (run publish/publish_workbook.py first if
+#                             you changed the workbook, so Cloud reflects it)
+#   - schedule (nightly)   -> picks up edits made directly in the Tableau UI
+#   - workflow_dispatch    -> run on demand from the Actions tab
+#
+# Setup (one-time): make the repo PUBLIC, set Pages source to "GitHub Actions",
+# and add repo secrets TABLEAU_PAT_NAME / TABLEAU_PAT_SECRET. See README.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'publish/**'
+      - 'workbooks/**'
+      - '.github/workflows/deploy-pages.yml'
+  schedule:
+    - cron: '0 6 * * *'   # 06:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Export the live dashboard from Tableau Cloud
+        env:
+          TABLEAU_PAT_NAME: ${{ secrets.TABLEAU_PAT_NAME }}
+          TABLEAU_PAT_SECRET: ${{ secrets.TABLEAU_PAT_SECRET }}
+        # export_dashboard.py is pure stdlib; GitHub runners have clean TLS, so
+        # no CA bundle is needed here.
+        run: python publish/export_dashboard.py site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

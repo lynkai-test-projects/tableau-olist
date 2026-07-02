@@ -52,6 +52,32 @@ export TABLEAU_PAT_SECRET=...
 python publish/publish_workbook.py
 ```
 
+## Public dashboard on GitHub Pages (auto-deploy)
+
+`.github/workflows/deploy-pages.yml` publishes a **static snapshot** of the dashboard
+(PNG + downloadable PDF, wrapped in a small `index.html`) to GitHub Pages at
+`https://lynkai-test-projects.github.io/tableau-olist/`. It exports whatever is
+**live on Tableau Cloud** via `publish/export_dashboard.py` (stdlib only), on every
+relevant push, **nightly** (to catch edits made in the Tableau UI), and on demand.
+
+**One-time setup:**
+1. **Make this repo public** — Settings → General → *Change visibility* → Public. *(Free GitHub Pages requires a public repo.)*
+2. **Enable Pages via Actions** — Settings → Pages → *Build and deployment* → **Source: GitHub Actions**.
+3. **Add two repo secrets** — Settings → Secrets and variables → Actions → *New repository secret*:
+   - `TABLEAU_PAT_NAME`  (your Tableau Personal Access Token name)
+   - `TABLEAU_PAT_SECRET` (the token secret)
+4. Run it once from the **Actions** tab (*Deploy dashboard to GitHub Pages* → *Run workflow*), or push a change.
+
+**Notes on behaviour:**
+- The page reflects the **currently published** Tableau Cloud dashboard. If you change
+  the workbook *code* here, run `publish/publish_workbook.py` first so Cloud has the new
+  version, then the export picks it up. Edits made directly in the Tableau UI are picked
+  up automatically by the nightly run.
+- It's a **static image** (GitHub Pages can't host the interactive Tableau engine). For a
+  clickable public dashboard, publish to **Tableau Public** instead.
+- A GitHub Action can't be triggered *by* a Tableau-UI edit (Tableau doesn't notify
+  GitHub) — that's why there's a nightly `schedule` in addition to `push`.
+
 ## Notes
 - **Snowflake auth for the extract** uses key-pair (the same key the Snowflake MCP
   uses); it only needs `SELECT` on `OLIST.DBT_DEMO` + the `OLIST.PUBLIC` `V_*` views.

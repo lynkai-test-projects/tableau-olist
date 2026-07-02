@@ -1,8 +1,9 @@
 # Local publish config may hold environment-specific paths; PAT is always in env.
 publish/config.toml
 
-# Build intermediates + exported previews
+# Build intermediates + exported previews + generated Pages site
 build/
+site/
 *.hyper
 hyperd.log
 
