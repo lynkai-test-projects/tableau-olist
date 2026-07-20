@@ -45,12 +45,14 @@ def _col(key, datatype, role, ttype, caption=None, fmt=None):
     return f"      <column datatype='{datatype}'{f}{cap} name='[{key}]' role='{role}' type='{ttype}' />"
 
 
-def _map(key):
-    return f"          <map key='[{key}]' value='[Extract].[{key}]' />"
+def _map(key, rel):
+    # The map VALUE is prefixed with the relation NAME (not the schema). With one table per
+    # datasource the relation name is the hyper table name (Orders, MonthlyTrend, ...).
+    return f"          <map key='[{key}]' value='[{rel}].[{key}]' />"
 
 
 def datasource(dsname, hcname, table, caption, cols, extra=""):
-    maps = "\n".join(_map(c[0]) for c in cols)
+    maps = "\n".join(_map(c[0], table) for c in cols)
     defs = "\n".join(_col(*c) for c in cols)
     return f"""    <datasource caption='{caption}' inline='true' name='{dsname}' version='18.1'>
       <connection class='federated'>
@@ -112,11 +114,15 @@ def ddisc(col, datatype="integer", caption=None):
 
 
 # calculated fields (defined on their datasources, repeated in the worksheets that use them)
+# Numeric calc fields (render in full on Text marks and on chart axes; string labels get
+# clipped to the cell width, so we keep these numeric). Percentages are pre-scaled to 0-100
+# and rounded; the tile captions carry the R$ / % units. Tableau's image export does not
+# reliably apply a measure's default-format, so we round in the formula instead.
 CALC = {
-    "MARGIN_PCT": "<column caption='Gross Margin %' datatype='real' default-format='p1%' name='[MARGIN_PCT]' role='measure' type='quantitative'><calculation class='tableau' formula='SUM([GROSS_PROFIT_BRL]) / SUM([PRODUCT_REVENUE_BRL])' /></column>",
-    "AOV": "<column caption='AOV (BRL)' datatype='real' default-format='&quot;R$&quot;#,##0' name='[AOV]' role='measure' type='quantitative'><calculation class='tableau' formula='SUM([GMV_BRL]) / COUNTD([ORDER_ID])' /></column>",
-    "LATE_RATE": "<column caption='Late-Delivery Rate' datatype='real' default-format='p1%' name='[LATE_RATE]' role='measure' type='quantitative'><calculation class='tableau' formula='AVG([IS_LATE])' /></column>",
-    "CONV": "<column caption='Conversion %' datatype='real' default-format='p1%' name='[CONV]' role='measure' type='quantitative'><calculation class='tableau' formula='SUM([PURCHASE_SESSIONS]) / SUM([SESSIONS])' /></column>",
+    "MARGIN_PCT": "<column caption='Gross Margin %' datatype='real' name='[MARGIN_PCT]' role='measure' type='quantitative'><calculation class='tableau' formula='ROUND(100 * SUM([GROSS_PROFIT_BRL]) / SUM([PRODUCT_REVENUE_BRL]), 1)' /></column>",
+    "AOV": "<column caption='AOV (BRL)' datatype='real' name='[AOV]' role='measure' type='quantitative'><calculation class='tableau' formula='ROUND(SUM([GMV_BRL]) / COUNTD([ORDER_ID]), 0)' /></column>",
+    "LATE_RATE": "<column caption='Late-Delivery Rate' datatype='real' name='[LATE_RATE]' role='measure' type='quantitative'><calculation class='tableau' formula='ROUND(100 * AVG([IS_LATE]), 1)' /></column>",
+    "CONV": "<column caption='Conversion %' datatype='real' name='[CONV]' role='measure' type='quantitative'><calculation class='tableau' formula='ROUND(100 * SUM([PURCHASE_SESSIONS]) / SUM([SESSIONS]), 1)' /></column>",
 }
 
 
@@ -311,8 +317,8 @@ def build_twb() -> str:
     # ---- worksheets ------------------------------------------------------------------
     sheets = []
 
-    # KPI tiles (Executive Overview)
-    d, _ = dmeas("GMV_BRL", "Sum", "real", "GMV (BRL)", MONEY)
+    # KPI tiles (Executive Overview) — numeric so the values render in full; units are in the captions.
+    d, _ = dmeas("GMV_BRL", "Sum")
     sheets.append(kpi("KPI GMV", "federated.orders", "Olist Orders (dbt)", d, R("federated.orders", "[sum:GMV_BRL:qk]")))
 
     margin_dep = (dmeas("GROSS_PROFIT_BRL", "Sum")[0] + "\n            "
@@ -366,22 +372,26 @@ def build_twb() -> str:
                      R("federated.funnel", dimtok), R("federated.funnel", stok),
                      "Bar", view_extra=sort("federated.funnel", dimtok, otok, "ASC"), mark_color=ACCENT))
 
+    # numeric conversion dep for the charts (KPI uses the string K_CONV instead)
+    conv_num_dep = (dmeas("PURCHASE_SESSIONS", "Sum", "integer")[0] + "\n            "
+                    + dmeas("SESSIONS", "Sum", "integer")[0] + "\n            " + CALC["CONV"])
+
     # 5. Conversion by Device
     dimdep, dimtok = ddim("DEVICE_TYPE", caption="Device")
     sheets.append(ws("Conversion by Device", "federated.funneld", "Olist Funnel Daily (dbt)",
-                     f"{dimdep}\n            {conv_dep}", R("federated.funneld", dimtok), R("federated.funneld", "[CONV]"),
+                     f"{dimdep}\n            {conv_num_dep}", R("federated.funneld", dimtok), R("federated.funneld", "[CONV]"),
                      "Bar", view_extra=sort("federated.funneld", dimtok, "[CONV]"), mark_color=ACCENT))
 
     # 6. Conversion by Traffic Source
     dimdep, dimtok = ddim("TRAFFIC_SOURCE", caption="Traffic Source")
     sheets.append(ws("Conversion by Source", "federated.funneld", "Olist Funnel Daily (dbt)",
-                     f"{dimdep}\n            {conv_dep}", R("federated.funneld", dimtok), R("federated.funneld", "[CONV]"),
+                     f"{dimdep}\n            {conv_num_dep}", R("federated.funneld", dimtok), R("federated.funneld", "[CONV]"),
                      "Bar", view_extra=sort("federated.funneld", dimtok, "[CONV]"), mark_color=ACCENT))
 
     # 7. Conversion Trend (monthly)
     ddep, dtok = ddate("EVENT_MONTH", "Event Month")
     sheets.append(ws("Conversion Trend", "federated.funneld", "Olist Funnel Daily (dbt)",
-                     f"{ddep}\n            {conv_dep}", R("federated.funneld", "[CONV]"), R("federated.funneld", dtok),
+                     f"{ddep}\n            {conv_num_dep}", R("federated.funneld", "[CONV]"), R("federated.funneld", dtok),
                      "Line", mark_color=ACCENT))
 
     # 8. Late Rate by Distance (bar, ink) with band filter

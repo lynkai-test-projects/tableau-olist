@@ -26,8 +26,8 @@ from pathlib import Path
 from urllib import request
 
 NS = {"t": "http://tableau.com/api"}
-SERVER = os.environ.get("TABLEAU_SERVER", "https://prod-uk-a.online.tableau.com")
-SITE = os.environ.get("TABLEAU_SITE", "laila-5f52a99af6")
+SERVER = os.environ.get("TABLEAU_SERVER", "https://10ax.online.tableau.com")
+SITE = os.environ.get("TABLEAU_SITE", "nba-lynk")
 VER = os.environ.get("TABLEAU_API_VER", "3.19")
 DEFAULT_VIEWS = "Executive Overview,Growth & Funnel,Delivery Operations,Seller & Customer 360"
 VIEWS = [v.strip() for v in os.environ.get("DASHBOARD_VIEWS", DEFAULT_VIEWS).split(",") if v.strip()]
