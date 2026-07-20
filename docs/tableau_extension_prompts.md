@@ -102,6 +102,38 @@ each prompt (they already exist in the workbook), then:
 
 ---
 
+---
+
+## Track C — One-shot polish pass (paste after publishing)
+
+The generated `.twb` gets the data, layout, and branding right, but Tableau's server render
+ignores number formats and mark-label settings expressed in the XML. This single prompt applies
+the remaining visual polish in the UI (2-click operations for the extension):
+
+> Open the workbook **Olist Marketplace Analytics** and apply this formatting across all four
+> dashboards, then save:
+>
+> 1. **Number formats.** Format every GMV / AOV / revenue field as currency `R$ #,##0` (e.g.
+>    `R$ 13,801,111`). Format **Gross Margin**, **Conversion %**, **Late-Delivery Rate**, and
+>    **Retention %** as a number with one decimal and a trailing `%` (the values are already on a
+>    0–100 scale, so do NOT multiply by 100 again — just add the `%` suffix). Apply these to the
+>    KPI tiles, axis ticks, and tooltips.
+> 2. **Treemap labels.** On **GMV by Category**, turn on mark labels showing the category name and
+>    its GMV (`R$ #,##0`), white text, centered; hide labels that don't fit.
+> 3. **Cohort heatmap.** On **Cohort Retention**, add a thin white cell border, show the Retention %
+>    label inside each cell (0 decimals), and set the color to a purple sequential ramp from white
+>    (0%) to `#6749F4` (100%). Optionally filter Months Since to 0–6 so the grid is compact.
+> 4. **Bar value labels.** On **GMV by State**, **GMV by Seller State**, **Customers by Segment**,
+>    **Conversion by Device**, and **Conversion by Source**, show the value at the end of each bar
+>    (currency or `%` as appropriate).
+> 5. **Tooltips.** Give every worksheet a clean tooltip that states the metric definition, e.g.
+>    "Delivered GMV (product + freight), R$" or "Conversion = purchasing sessions / all sessions
+>    (synthetic)".
+>
+> Keep the Lynk purple `#6749F4` theme and white background throughout.
+
+---
+
 ## Notes
 - The extension edits the **live Cloud** copy. To keep the git repo the source of truth, mirror
   any structural change back into `publish/build_workbook.py`; UI-only polish can live in Cloud
