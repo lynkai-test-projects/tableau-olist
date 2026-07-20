@@ -2,6 +2,6 @@
 server_url = "https://prod-uk-a.online.tableau.com"
 site_content_url = "laila-5f52a99af6"
 project_name = "default"
-workbook_name = "Olist Marketplace Overview"
-workbook_file = "../workbooks/olist_overview.twbx"
+workbook_name = "Olist Marketplace Analytics"
+workbook_file = "../workbooks/olist_marketplace.twbx"
 api_version = "3.19"
